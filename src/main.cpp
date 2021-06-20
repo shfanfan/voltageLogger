@@ -25,6 +25,8 @@ void setup() {
     ; // wait for serial port to connect. Needed for native USB port only
   }
 
+  //Serial.println ("boo1");
+
   if (! rtc.begin()) {
     Serial.println("Couldn't find RTC");
     Serial.flush();
@@ -82,23 +84,23 @@ void loop() {
 
     if (error){
       DateTime now = rtc.now();
-      String dataline = (String)now.year() + "/" + now.month() + "/" + now.day() + "-" +now.hour() + ":" + now.minute() + ":" + now.second() + " , " + String(a*ADC_values[0]+b) + " , " + String(a*ADC_values[1]+b) + " , " + String(a*ADC_values[2]+b) +" , " + String(a*ADC_values[3]+b);
+      String dataline = now.unixtime() + " , " + (String)now.year() + "/" + now.month() + "/" + now.day() + "-" +now.hour() + ":" + now.minute() + ":" + now.second() + " , " + String(a*ADC_values[0]+b) + " , " + String(a*ADC_values[1]+b) + " , " + String(a*ADC_values[2]+b) +" , " + String(a*ADC_values[3]+b);
       Serial.println (dataline.c_str());
       //print to file:
-      File dataFile = SD.open(fileName.c_str(), FILE_APPEND);
+      // File dataFile = SD.open(fileName.c_str(), FILE_APPEND);
     
-      // if the file is available, write to it:
-      if (dataFile) {
-        dataFile.println(dataline);
-        dataFile.close();
-        // print to the serial port too:
-        Serial.println(dataline);
-      } else {    // if the file isn't open, pop up an error:
-        Serial.print("error opening ");
-        Serial.println(fileName.c_str());
-      }
-      //turn led ON
-      digitalWrite(LED_BUILTIN,HIGH); //stays high untill next reset
+      // // if the file is available, write to it:
+      // if (dataFile) {
+      //   dataFile.println(dataline);
+      //   dataFile.close();
+      //   // print to the serial port too:
+      //   Serial.println(dataline);
+      // } else {    // if the file isn't open, pop up an error:
+      //   Serial.print("error opening ");
+      //   Serial.println(fileName.c_str());
+      // }
+      // //turn led ON
+      // digitalWrite(LED_BUILTIN,HIGH); //stays high untill next reset
       error = false;
     }
 }
