@@ -69,38 +69,56 @@ void setup() {
   
 }
 
+#define MAX_LOOPS_WO_PRINTING 100
+#define MAX_ENTRIES_PER_FILE_NORMAL 5000 // 1000 ~ 60k
+#define MAX_ENTRIES_PER_FILE_ERROR 50000 // ~22 minutes
+long loopsWithoutprinting = 0;
+long EntriesAdded = 0;
 void loop() {
   //read data - fast loop:
-   for (int i = 0 ; i<CHANNEL_COUNT ; i++){
+  for (int i = 0 ; i<CHANNEL_COUNT ; i++){
 
-      ADC_values[i] = analogRead(Analog_channel_pin[i]);
-      
-      if (ADC_values[i]<1920){ //value that indicates a voltage drop below 22v
-        error = true; //raise voltage drop event flag
-        //Serial.printf("channel %d: ADC VALUE = %d \n",i,ADC_values[i]);
-        //delay(100);
-      }
-   }
-
-    if (error){
-      DateTime now = rtc.now();
-      String dataline = now.unixtime() + " , " + (String)now.year() + "/" + now.month() + "/" + now.day() + "-" +now.hour() + ":" + now.minute() + ":" + now.second() + " , " + String(a*ADC_values[0]+b) + " , " + String(a*ADC_values[1]+b) + " , " + String(a*ADC_values[2]+b) +" , " + String(a*ADC_values[3]+b);
-      Serial.println (dataline.c_str());
-      //print to file:
-      // File dataFile = SD.open(fileName.c_str(), FILE_APPEND);
+    ADC_values[i] = analogRead(Analog_channel_pin[i]);
     
-      // // if the file is available, write to it:
-      // if (dataFile) {
-      //   dataFile.println(dataline);
-      //   dataFile.close();
-      //   // print to the serial port too:
-      //   Serial.println(dataline);
-      // } else {    // if the file isn't open, pop up an error:
-      //   Serial.print("error opening ");
-      //   Serial.println(fileName.c_str());
-      // }
-      // //turn led ON
-      // digitalWrite(LED_BUILTIN,HIGH); //stays high untill next reset
+    if (ADC_values[i]<1920){ //value that indicates a voltage drop below 22v
+      error = true; //raise voltage drop event flag
+      //Serial.printf("channel %d: ADC VALUE = %d \n",i,ADC_values[i]);
+      //delay(100);
+    }
+  }
+
+  //change to another file in case file is too big (in error - aloow the file to grow larger so not to miss data)
+  if ( (!error && EntriesAdded>MAX_ENTRIES_PER_FILE_NORMAL) || EntriesAdded> MAX_ENTRIES_PER_FILE_ERROR ){
+    DateTime now = rtc.now();
+    fileName = (String)"/" +now.year() + "_" + now.month() + "_" + now.day() + "_" + now.hour() + "_" + now.minute() + "_" + now.second()+".csv";
+    Serial.println(fileName.c_str());
+    EntriesAdded=0;
+  }
+
+  if (error || loopsWithoutprinting > MAX_LOOPS_WO_PRINTING){
+    loopsWithoutprinting = 0;
+    EntriesAdded++;
+    DateTime now = rtc.now();
+    String dataline = (String)now.unixtime() + " , " + (String)now.year() + "/" + now.month() + "/" + now.day() + "-" +now.hour() + ":" + now.minute() + ":" + now.second() + " , " + String(a*ADC_values[0]+b) + " , " + String(a*ADC_values[1]+b) + " , " + String(a*ADC_values[2]+b) +" , " + String(a*ADC_values[3]+b);
+
+    //print to file:
+    File dataFile = SD.open(fileName.c_str(), FILE_APPEND);
+    // if the file is available, write to it:
+    if (dataFile) {
+      dataFile.println(dataline);
+      dataFile.close();
+      // print to the serial port too:
+      //Serial.println(dataline);
+    } else {    // if the file isn't open, pop up an error:
+      Serial.print("error opening ");
+      Serial.println(fileName.c_str());
+    }
+    //turn led ON if error
+    if (error){
+      digitalWrite(LED_BUILTIN,HIGH); //stays high untill next reset
       error = false;
     }
+  }else{
+    loopsWithoutprinting++;
+  }
 }
