@@ -16,8 +16,15 @@
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 
-// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncElegantOTA.h>
+const char* ssid = "vlogger";
+const char* password = "vlogger";
+AsyncWebServer server(80);
 
+// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Adafruit_SSD1306* display;
 
 bool prevCycleHadError=false;
@@ -52,7 +59,7 @@ double a1 = 14.0/1305.0;
 double b1 = 10 -(a1 *775);
 hw_timer_t * OLED_refreshTimer = NULL;
 bool shouldDisplay = false;
-
+IPAddress IP;
 
 void writeLastReadingToOLED(){
   static int i = 0;
@@ -62,7 +69,9 @@ void writeLastReadingToOLED(){
   display->setCursor(0, 0); 
   std::ostringstream strs;
   strs << errors[currentError].c_str();
-  strs << "\n\n";
+  strs << "\nIP = ";
+  strs << (int)IP[0] << "." << (int)IP[1] << "." << (int)IP[2] << "." << (int)IP[3] ;
+  strs << "\n";
   strs << "errors count: ";
   strs << errorCounter;
   strs << "\nV1=";
@@ -91,7 +100,6 @@ void writeLastReadingToOLED(){
 }
 
 
-
 void IRAM_ATTR onOledRefreshTick() {
   shouldDisplay = true;
 }
@@ -109,32 +117,9 @@ void setup() {
   pinMode(LED_BUILTIN,OUTPUT);
   //Serial.println ("boo1");
 
-  if (! rtc.begin()) {
-    Serial.println("Couldn't find RTC");
-    Serial.flush();
-    abort();
-  }
-  
-  if (! rtc.initialized() || rtc.lostPower()) {
-    Serial.println("RTC is NOT initialized, let's set the time!");
-    // When time needs to be set on a new device, or after a power loss, the
-    // following line sets the RTC to the date & time this sketch was compiled
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    // This line sets the RTC with an explicit date & time, for example to set
-    // January 21, 2014 at 3am you would call:
-    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
-    //
-    // Note: allow 2 seconds after inserting battery or applying external power
-    // without battery before calling adjust(). This gives the PCF8523's
-    // crystal oscillator time to stabilize. If you call adjust() very quickly
-    // after the RTC is powered, lostPower() may still return true.
-  }
-  rtc.start();
-  DateTime now = rtc.now();
-
-  fileName = (String)"/" +now.year() + "_" + now.month() + "_" + now.day() + "_" + now.hour() + "_" + now.minute() + "_" + now.second()+".csv";
-  
-  //OLED initialization
+/*******************************************************/
+/***********              oled             **************/
+/*******************************************************/
   {
   
   display = new Adafruit_SSD1306(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -165,7 +150,57 @@ void setup() {
 
   }
 
+  Serial.begin(115200);
 
+/*******************************************************/
+/***********              OTA             **************/
+/*******************************************************/
+    // Connect to Wi-Fi network with SSID and password
+  Serial.println("Setting AP (Access Point)…");
+  // Remove the password parameter, if you want the AP (Access Point) to be open
+  bool wifigood = WiFi.softAP(ssid, password);
+  Serial.printf ("wifi is %s\n", wifigood?"good":"bad");
+  IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", "Hi! I am ESP32.");
+  });
+  AsyncElegantOTA.begin(&server);    // Start ElegantOTA
+  server.begin();
+  Serial.println("HTTP server started");
+
+
+/*******************************************************/
+/***********        Real Time Clock       **************/
+/*******************************************************/
+  if (! rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+    Serial.flush();
+    abort();
+  }
+  
+  if (! rtc.initialized() || rtc.lostPower()) {
+    Serial.println("RTC is NOT initialized, let's set the time!");
+    // When time needs to be set on a new device, or after a power loss, the
+    // following line sets the RTC to the date & time this sketch was compiled
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+    //
+    // Note: allow 2 seconds after inserting battery or applying external power
+    // without battery before calling adjust(). This gives the PCF8523's
+    // crystal oscillator time to stabilize. If you call adjust() very quickly
+    // after the RTC is powered, lostPower() may still return true.
+  }
+  rtc.start();
+
+/*******************************************************/
+/***********          SD card             **************/
+/*******************************************************/
+  DateTime now = rtc.now();
+  fileName = (String)"/" +now.year() + "_" + now.month() + "_" + now.day() + "_" + now.hour() + "_" + now.minute() + "_" + now.second()+".csv";
   Serial.print("Initializing SD card...");
 
   // see if the card is present and can be initialized:
