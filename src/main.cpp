@@ -3,17 +3,98 @@
 #include <SD.h>
 #include "RTClib.h"
 
+//i2c in esp32 D1 mini : SDA=GPIO 21, SCL=GPIO 22
+//i2c in adafruit feather32 : SDA=GPIO 23, SCL=GPIO 22
+#include "beeSplash.h"
+#include <sstream>
+#include <SPI.h> 
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+
+// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+Adafruit_SSD1306* display;
+
+bool prevCycleHadError=false;
+long errorCounter = 0;
+int currentError = 0;
+String errors[] = {
+  "no error",
+  "error1",
+  "error2",
+  "error3",
+  "SD card\ninit\nerror",
+  "bad voltage"
+};
+
+#define SPLASH_DELAY_MS 3000
+
 RTC_PCF8523 rtc;
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 const int chipSelect = 33;
 
 
+float getBattVoltage(){
+  return (analogRead(A13)*2/4096.0*3.3);
+}
+
+
 #define CHANNEL_COUNT 4
 const int Analog_channel_pin[CHANNEL_COUNT]= {15,34,39,36};
 int ADC_values[CHANNEL_COUNT];
-double voltage_value = 0; 
-double a = 14.0/1305.0;
-double b = 10 -(a *775);
+float Voltages_values[CHANNEL_COUNT];
+double a1 = 14.0/1305.0;
+double b1 = 10 -(a1 *775);
+hw_timer_t * OLED_refreshTimer = NULL;
+bool shouldDisplay = false;
+
+
+void writeLastReadingToOLED(){
+  static int i = 0;
+  i++;
+  //Serial.print("sec1\n");
+  display->clearDisplay();
+  display->setCursor(0, 0); 
+  std::ostringstream strs;
+  strs << errors[currentError].c_str();
+  strs << "\n\n";
+  strs << "errors count: ";
+  strs << errorCounter;
+  strs << "\nV1=";
+  strs << Voltages_values[0];
+  strs << "\nV2=";
+  strs << Voltages_values[1];
+  strs << "\nV3=";
+  strs << Voltages_values[2];
+  strs << "\nV4=";
+  strs << Voltages_values[3];    
+  strs << "\nbat =";
+  strs << getBattVoltage();
+  strs << "V";
+  // // strs << "\nelapsed:";
+  // // strs << pf.getElapsedSeconds()/1000;
+  display->write(strs.str().c_str());
+
+  //display->write(",.");
+
+//Serial.print("sec2\n");
+
+  display->display();
+
+  //Serial.printf("/n battery voltage = %f V\n",getBattVoltage());
+
+}
+
+
+
+void IRAM_ATTR onOledRefreshTick() {
+  shouldDisplay = true;
+}
 
 
 String fileName;
@@ -25,6 +106,7 @@ void setup() {
     ; // wait for serial port to connect. Needed for native USB port only
   }
 
+  pinMode(LED_BUILTIN,OUTPUT);
   //Serial.println ("boo1");
 
   if (! rtc.begin()) {
@@ -52,21 +134,68 @@ void setup() {
 
   fileName = (String)"/" +now.year() + "_" + now.month() + "_" + now.day() + "_" + now.hour() + "_" + now.minute() + "_" + now.second()+".csv";
   
+  //OLED initialization
+  {
+  
+  display = new Adafruit_SSD1306(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if(!display->begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+
+  display->clearDisplay();
+  display->drawBitmap(0, 0,beesplash_data, beesplash_width, beesplash_height, 1);
+  display->display();
+  delay(SPLASH_DELAY_MS); // Pause 
+  display->clearDisplay();
+
+
+  //for text writing:
+  display->setTextSize(1);      // Normal 1:1 pixel scale
+  display->setTextColor(SSD1306_WHITE); // Draw white text
+  display->setCursor(0, 0);     // Start at top-left corner
+  display->cp437(true);         // Use full 256 char 'Code Page 437' font
+
+  OLED_refreshTimer = timerBegin(1, 80, true);
+  timerAttachInterrupt(OLED_refreshTimer, &onOledRefreshTick, true); 
+  timerAlarmWrite(OLED_refreshTimer, 1000000, true);           
+  timerAlarmEnable(OLED_refreshTimer);
+
+  }
+
+
   Serial.print("Initializing SD card...");
 
   // see if the card is present and can be initialized:
   if (!SD.begin(chipSelect)) {
     Serial.println("Card failed, or not present");
+    currentError = 4;
+    errorCounter++;
+    display->setTextSize(2); 
+
+    //put out a SD warning sign (three blinks)
+    for (int j = 1 ; j<5 ; j++){
+        digitalWrite(LED_BUILTIN,HIGH);
+        delay(500);
+        digitalWrite(LED_BUILTIN,LOW);
+        delay(500);
+    }
+
+    //delay(1000);
     // don't do anything more:
+    writeLastReadingToOLED();
     while (1);
   }
   Serial.println("sd card initialized.");
 
-  pinMode(LED_BUILTIN,OUTPUT);
-  digitalWrite(LED_BUILTIN,HIGH);
-  delay(3000);
-  digitalWrite(LED_BUILTIN,LOW);
   
+  digitalWrite(LED_BUILTIN,HIGH);
+  delay(2000);
+  digitalWrite(LED_BUILTIN,LOW);
+  delay(2000);
+
 }
 
 #define MAX_LOOPS_WO_PRINTING 100
@@ -74,15 +203,26 @@ void setup() {
 #define MAX_ENTRIES_PER_FILE_ERROR 50000 // ~22 minutes
 long loopsWithoutprinting = 0;
 long EntriesAdded = 0;
+String dataline="";
+
+
+
 void loop() {
+
+  if (shouldDisplay) {
+    writeLastReadingToOLED();
+    shouldDisplay = false;
+  }
+
+  error = false;
+
   //read data - fast loop:
   for (int i = 0 ; i<CHANNEL_COUNT ; i++){
 
     ADC_values[i] = analogRead(Analog_channel_pin[i]);
-    
     if (ADC_values[i]<1920){ //value that indicates a voltage drop below 22v
       error = true; //raise voltage drop event flag
-      //Serial.printf("channel %d: ADC VALUE = %d \n",i,ADC_values[i]);
+      //Serial.printf("channel %d: ADC VALUE = %d ",i,ADC_values[i]);
       //delay(100);
     }
   }
@@ -99,7 +239,14 @@ void loop() {
     loopsWithoutprinting = 0;
     EntriesAdded++;
     DateTime now = rtc.now();
-    String dataline = (String)now.unixtime() + " , " + (String)now.year() + "/" + now.month() + "/" + now.day() + "-" +now.hour() + ":" + now.minute() + ":" + now.second() + " , " + String(a*ADC_values[0]+b) + " , " + String(a*ADC_values[1]+b) + " , " + String(a*ADC_values[2]+b) +" , " + String(a*ADC_values[3]+b);
+
+    for ( int w=0 ; w< CHANNEL_COUNT; w++){
+      Voltages_values[w] = a1*ADC_values[w]+ (ADC_values[w]>0?b1:0);
+    }
+    //Serial.printf(" V1=%f V2=%f V3=%f V4=%f\n",Voltages_values[0],Voltages_values[1],Voltages_values[2],Voltages_values[3]);
+    
+
+    dataline = (String)now.unixtime() + " , " + (String)now.year() + "/" + now.month() + "/" + now.day() + "-" +now.hour() + ":" + now.minute() + ":" + now.second() + " , " + String(Voltages_values[0]) + " , " + String(Voltages_values[1]) + " , " + String(Voltages_values[2]) +" , " + String(Voltages_values[3]);
 
     //print to file:
     File dataFile = SD.open(fileName.c_str(), FILE_APPEND);
@@ -113,12 +260,24 @@ void loop() {
       Serial.print("error opening ");
       Serial.println(fileName.c_str());
     }
-    //turn led ON if error
-    if (error){
-      digitalWrite(LED_BUILTIN,HIGH); //stays high untill next reset
-      error = false;
-    }
   }else{
     loopsWithoutprinting++;
   }
+
+
+    //turn led ON if error
+  if (error){
+    digitalWrite(LED_BUILTIN,HIGH); //stays high untill next reset
+    if (!prevCycleHadError){
+      errorCounter++;
+      prevCycleHadError = true;
+      currentError = 5;
+    }
+  }else{                          //no error this round
+    prevCycleHadError = false;
+    currentError = 0;
+  }
+  
+
+
 }
