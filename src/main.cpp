@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include "RTClib.h"
+#include "iomanip"
 
 //i2c in esp32 D1 mini : SDA=GPIO 21, SCL=GPIO 22
 //i2c in adafruit feather32 : SDA=GPIO 23, SCL=GPIO 22
@@ -16,13 +17,13 @@
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 
-#include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncElegantOTA.h>
-const char* ssid = "vlogger";
-const char* password = "vlogger";
-AsyncWebServer server(80);
+// #include <WiFi.h>
+// #include <AsyncTCP.h>
+// #include <ESPAsyncWebServer.h>
+// #include <AsyncElegantOTA.h>
+// const char* ssid = "vlogger";
+// const char* password = "vlogger";
+// AsyncWebServer server(80);
 
 // Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Adafruit_SSD1306* display;
@@ -31,12 +32,12 @@ bool prevCycleHadError=false;
 long errorCounter = 0;
 int currentError = 0;
 String errors[] = {
-  "no error",
+  "all is OK",
   "error1",
   "error2",
   "error3",
-  "SD card\ninit\nerror",
-  "bad voltage"
+  "SD error",
+  "volt error"
 };
 
 #define SPLASH_DELAY_MS 3000
@@ -45,6 +46,7 @@ RTC_PCF8523 rtc;
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 const int chipSelect = 33;
 
+int SDCardUsedPercent = 0;
 
 float getBattVoltage(){
   return (analogRead(A13)*2/4096.0*3.3);
@@ -52,14 +54,15 @@ float getBattVoltage(){
 
 
 #define CHANNEL_COUNT 4
-const int Analog_channel_pin[CHANNEL_COUNT]= {15,34,39,36};
+const int Analog_channel_pin[CHANNEL_COUNT]= {15,34,39,36}; //box1 setup. other boxes- worked: {15,34,39,36}; 13=A12
 int ADC_values[CHANNEL_COUNT];
 float Voltages_values[CHANNEL_COUNT];
 double a1 = 14.0/1305.0;
 double b1 = 10 -(a1 *775);
 hw_timer_t * OLED_refreshTimer = NULL;
+hw_timer_t * SD_CheckTimer = NULL;
 bool shouldDisplay = false;
-IPAddress IP;
+IPAddress IP(50, 50, 50, 50);
 
 void writeLastReadingToOLED(){
   static int i = 0;
@@ -69,29 +72,46 @@ void writeLastReadingToOLED(){
   display->setCursor(0, 0); 
   std::ostringstream strs;
   strs << errors[currentError].c_str();
-  strs << "\nIP = ";
-  strs << (int)IP[0] << "." << (int)IP[1] << "." << (int)IP[2] << "." << (int)IP[3] ;
-  strs << "\n";
-  strs << "errors count: ";
+
+  display->setTextSize(2);
+  display->write(strs.str().c_str());
+
+  strs.clear();
+  strs.seekp(0);
+  display->setCursor(0,16);
+
+  // strs << "IP:";
+  // strs << (int)IP[0] << "." << (int)IP[1] << "." << (int)IP[2] << "." << (int)IP[3] ;
+  // strs << "\n";
+  strs << "errors:";
   strs << errorCounter;
-  strs << "\nV1=";
-  strs << Voltages_values[0];
-  strs << "\nV2=";
-  strs << Voltages_values[1];
-  strs << "\nV3=";
-  strs << Voltages_values[2];
-  strs << "\nV4=";
-  strs << Voltages_values[3];    
-  strs << "\nbat =";
-  strs << getBattVoltage();
+  strs << " , bat->";
+  strs << std::fixed << std::setw( 4 ) << std::setprecision( 2 ) << getBattVoltage();
   strs << "V";
+  strs << "\n\nV1=";
+  strs << std::fixed << std::setw( 5 ) << std::setprecision( 2 ) << Voltages_values[0];
+  strs << "   V2=";
+  strs << std::fixed << std::setw( 5 ) << std::setprecision( 2 ) << Voltages_values[1];
+  strs << "\nV3=";
+  strs << std::fixed << std::setw( 5 ) << std::setprecision( 2 ) << Voltages_values[2];
+  strs << "   V4=";
+  strs << std::fixed << std::setw( 5 ) << std::setprecision( 2 ) << Voltages_values[3];    
   // // strs << "\nelapsed:";
   // // strs << pf.getElapsedSeconds()/1000;
+  strs << "\n\nsd:";
+  strs << std::setw(2) << std::setprecision(0) << SD.cardSize()/1000000000.0;
+  display->setTextSize(1);
   display->write(strs.str().c_str());
+
+  //display->setCursor(0,30);
+  for (int u = 27 ; u<(28+SDCardUsedPercent) ; u++){
+    display->drawPixel(u,63,SSD1306_WHITE);
+  }
 
   //display->write(",.");
 
-//Serial.print("sec2\n");
+  //Serial.println(strs.str().c_str());
+  //Serial.println(Voltages_values[0]);
 
   display->display();
 
@@ -104,6 +124,16 @@ void IRAM_ATTR onOledRefreshTick() {
   shouldDisplay = true;
 }
 
+bool shouldcheckSDCard = true;
+void IRAM_ATTR onSDcardCheckTick() {
+  shouldcheckSDCard = true;
+}
+
+#define SD_SIZE_MB 32
+void checkSDCard(){
+  SDCardUsedPercent = SD.usedBytes()/SD.cardSize()*100.0 ;
+  Serial.printf("SD used :%d percent. total: %d, used: %d\n",SDCardUsedPercent, SD.usedBytes(),SD.cardSize());
+}
 
 String fileName;
 bool error = false;
@@ -148,27 +178,38 @@ void setup() {
   timerAlarmWrite(OLED_refreshTimer, 1000000, true);           
   timerAlarmEnable(OLED_refreshTimer);
 
+  SD_CheckTimer = timerBegin(0, 80, true);
+  timerAttachInterrupt(SD_CheckTimer, &onSDcardCheckTick, true); 
+  timerAlarmWrite(SD_CheckTimer, 1000000000, true);    //once every 1000 seconds        
+  timerAlarmEnable(SD_CheckTimer);
+  
   }
 
-  Serial.begin(115200);
+// /*******************************************************/
+// /***********              OTA             **************/
+// /*******************************************************/
+//     // Connect to Wi-Fi network with SSID and password
+//   Serial.println("Setting AP (Access Point)…");
+//   // Remove the password parameter, if you want the AP (Access Point) to be open
+//   bool wifigood = WiFi.softAP(ssid, password);
+//   Serial.printf ("wifi is %s\n", wifigood?"good":"bad");
+  
 
-/*******************************************************/
-/***********              OTA             **************/
-/*******************************************************/
-    // Connect to Wi-Fi network with SSID and password
-  Serial.println("Setting AP (Access Point)…");
-  // Remove the password parameter, if you want the AP (Access Point) to be open
-  bool wifigood = WiFi.softAP(ssid, password);
-  Serial.printf ("wifi is %s\n", wifigood?"good":"bad");
-  IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", "Hi! I am ESP32.");
-  });
-  AsyncElegantOTA.begin(&server);    // Start ElegantOTA
-  server.begin();
-  Serial.println("HTTP server started");
+//   //wait for SYSTEM_EVENT_AP_START:
+//   delay(100);
+//   IPAddress NMask(255, 255, 255, 0);
+//   WiFi.softAPConfig(IP,IP,NMask);
+
+//   IP = WiFi.softAPIP();
+
+//   Serial.print("AP IP address: ");
+//   Serial.println(IP);
+//   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+//     request->send(200, "text/plain", "Hi! I am your trusty voltage logger.\n to update me over the air use /update. \n\n don't forget to tell Aviv i said hi... :)");
+//   });
+//   AsyncElegantOTA.begin(&server);    // Start ElegantOTA
+//   server.begin();
+//   Serial.println("HTTP server started");
 
 
 /*******************************************************/
@@ -202,9 +243,14 @@ void setup() {
   DateTime now = rtc.now();
   fileName = (String)"/" +now.year() + "_" + now.month() + "_" + now.day() + "_" + now.hour() + "_" + now.minute() + "_" + now.second()+".csv";
   Serial.print("Initializing SD card...");
-
+  bool sdInitGood = false;
+  for (int i=0; i<20 && !sdInitGood ; i++){
+    Serial.printf("SD card init attempt #%d\n",i);
+    sdInitGood = SD.begin(chipSelect);
+    delay(50);
+  }
   // see if the card is present and can be initialized:
-  if (!SD.begin(chipSelect)) {
+  if (!sdInitGood) {
     Serial.println("Card failed, or not present");
     currentError = 4;
     errorCounter++;
@@ -225,12 +271,6 @@ void setup() {
   }
   Serial.println("sd card initialized.");
 
-  
-  digitalWrite(LED_BUILTIN,HIGH);
-  delay(2000);
-  digitalWrite(LED_BUILTIN,LOW);
-  delay(2000);
-
 }
 
 #define MAX_LOOPS_WO_PRINTING 100
@@ -243,6 +283,11 @@ String dataline="";
 
 
 void loop() {
+
+  if (shouldcheckSDCard) {
+    checkSDCard();
+    shouldcheckSDCard = false;
+  }
 
   if (shouldDisplay) {
     writeLastReadingToOLED();
